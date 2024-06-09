@@ -67,9 +67,17 @@ func main() {
 	// Setup synchronisation operation with the github repo
 
 	for _, repo := range giteaRepos {
-		createRepo(config, repo, ghClient)
+		log.WithFields(log.Fields{
+			"name":    repo.Name,
+			"org":     repo.Owner.UserName,
+			"private": repo.Private,
+		}).Infoln("configuring repo")
 
-		setupMirror(config, repo, giteaClient)
+		repoCreated := setupRepo(config, repo, ghClient)
+
+		if repoCreated {
+			setupMirror(config, repo, giteaClient)
+		}
 	}
 }
 
@@ -85,34 +93,59 @@ func setupMirror(config Config, repo *gitea.Repository, client *gitea.Client) {
 
 }
 
-func createRepo(config Config, repo *gitea.Repository, client *github.Client) {
-	log.WithFields(log.Fields{
-		"name":    repo.Name,
-		"org":     repo.Owner.UserName,
-		"private": repo.Private,
-	}).Infoln("configuring mirror")
-
+func setupRepo(config Config, repo *gitea.Repository, client *github.Client) bool {
 	if repo.OriginalURL != "" {
-		return
+		return false
 	}
 
-	_, _, err := client.Repositories.Create(context.Background(), "", &github.Repository{
-		Name:        &repo.Name,
+	if githubExists(client, config.GithubUser, repo.Name) {
+		// Create repository if it doesn't exist already
+		_, _, err := client.Repositories.Create(context.Background(), "", &github.Repository{
+			Name:        &repo.Name,
+			Private:     &repo.Private,
+			Description: &repo.Description,
+			HasWiki:     &repo.HasWiki,
+			HasProjects: &repo.HasProjects,
+		})
+		if err != nil {
+			log.WithFields(log.Fields{
+				"name":    repo.Name,
+				"org":     repo.Owner.UserName,
+				"private": repo.Private,
+				"error":   err.Error(),
+			}).Errorln("error in creating repository")
+		}
+
+		return true
+	}
+
+	// Copy description, private state and other parameters if it exists
+	_, _, err := client.Repositories.Edit(context.Background(), config.GithubUser, repo.Name, &github.Repository{
 		Private:     &repo.Private,
 		Description: &repo.Description,
 		HasWiki:     &repo.HasWiki,
 		HasProjects: &repo.HasProjects,
 	})
-
 	if err != nil {
 		log.WithFields(log.Fields{
 			"name":    repo.Name,
 			"org":     repo.Owner.UserName,
 			"private": repo.Private,
 			"error":   err.Error(),
-		}).Errorln("error in creating repository")
+		}).Errorln("error in updating repository")
 	}
 
+	return false
+}
+
+func githubExists(client *github.Client, owner, repo string) bool {
+
+	_, _, err := client.Repositories.Get(context.Background(), owner, repo)
+	if err != nil {
+		return false
+	}
+
+	return true
 }
 
 func listGiteaRepositories(config Config, client *gitea.Client) []*gitea.Repository {
